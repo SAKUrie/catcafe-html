@@ -1,0 +1,11 @@
+# 这个仓库是直接喂给 GitHub Pages 的静态站点。
+# Pages 不解析 Git LFS，LFS 文件会被当成几十字节的指针文本原样吐出来，
+# 图片、音乐、字体会全部加载失败。所以这里显式禁用一切 filter，
+# 所有资源都必须以普通 blob 存进仓库。
+* -filter -diff -merge
+*.png binary
+*.mp3 binary
+*.ttf binary
+*.html text eol=lf
+*.txt  text eol=lf
+*.md   text eol=lf
