@@ -1370,7 +1370,7 @@ function newOverlay(title, panelW, panelH, dismissable, opts){
       place(dim, r.x, r.y, r.w, r.h);
       dim.style.background = tint;
       dim.style.pointerEvents = 'auto';
-      if (dismissable) dim.onclick = closeOverlays;
+      if (dismissable) dim.onclick = () => (opts.stack ? overlay.remove() : closeOverlays());
     }
   }
   const modal = el('div', 'modal', overlay);
@@ -1416,8 +1416,11 @@ function newOverlay(title, panelW, panelH, dismissable, opts){
   body.style.cssText = 'flex:1;min-height:0;width:100%;overflow:hidden;display:flex;' +
     'flex-direction:column;align-items:center;justify-content:center;gap:' + bodyGap + 'px';
 
-  if (dismissable) overlay.onclick = e => { if (e.target === overlay) closeOverlays(); };
-  return { overlay, modal, body };
+  // stack 的弹窗只关自己，不清空整个弹窗层——否则在三选一上面开一张详情，
+  // 关掉详情会连三选一一起清掉，那一轮就等于被跳过了。
+  const dismiss = opts.stack ? () => overlay.remove() : closeOverlays;
+  if (dismissable) overlay.onclick = e => { if (e.target === overlay) dismiss(); };
+  return { overlay, modal, body, dismiss };
 }
 
 function paperButton(parent, label, w, h, role, onClick){
@@ -2710,9 +2713,11 @@ function choiceCard(parent, def){
  */
 function rosterHoleRect(){
   const v = U.rect('ui_piece_viewport');
-  const pad = 12;
-  // 连标题那条一起露出来
-  return { x:v.x - pad, y:v.y - 62, w:v.w + pad * 2, h:v.h + 74 };
+  // 露出整个名册页，不只是那条棋子列表：上到卷轴标题、下到翻页栏，
+  // 左右各留一截让书页的边缘也在洞里，看着才像"这一页是亮的"。
+  const padX = 46, padTop = 74, padBottom = 62;
+  return { x:v.x - padX, y:v.y - padTop,
+           w:v.w + padX * 2, h:v.h + padTop + padBottom };
 }
 function choiceShiftX(panelW){
   const hole = rosterHoleRect();
@@ -2970,15 +2975,16 @@ function showRunMenu(){
  * （默认 #00000000 全透明），点面板外空白处收起。
  */
 function detailOverlay(name, def, metaLine, extraLine, onDismiss){
-  closeOverlays();
+  closeSymbolRefs();
   const w = U.num('ui_card_detail_width');
   // 表里的 430 是按「没有下班按钮」的内容量定的，多一颗按钮就得多给一截，
   // 否则底部的收起说明会被 overflow 裁掉。
   const h = U.num('ui_card_detail_height') + (onDismiss ? 58 : 0);
-  const { body } = newOverlay(name, w, h, true, {
+  const { body, dismiss } = newOverlay(name, w, h, true, {
     ribbonHeight: U.num('ui_card_detail_title_height'),
     bodyGap: 6,
     backdrop: U.color('ui_card_detail_backdrop_color'),
+    stack: true,
   });
 
   const iconSize = U.num('ui_card_detail_icon_size');
@@ -3014,7 +3020,7 @@ function detailOverlay(name, def, metaLine, extraLine, onDismiss){
     const can = canDismissPiece();
     const btn = paperButton(body, fmt(U.str('ui_card_detail_dismiss_format'), S.removalTokens),
       U.num('ui_card_detail_content_width'), 44, 'secondary',
-      () => { if (can) onDismiss(); });
+      () => { if (can){ dismiss(); onDismiss(); } });
     btn.classList.toggle('off', !can);
     btn.style.marginTop = '2px';
   }
@@ -3048,7 +3054,6 @@ async function dismissPiece(piece){
   if (boardIndex >= 0) S.board[boardIndex] = null;
 
   const def = defs[piece.key];
-  closeOverlays();
   refreshBoard();
   refreshRoster();
   updateHud();
