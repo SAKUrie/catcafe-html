@@ -162,6 +162,12 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 .card .nm{color:#472c1c;font-weight:700}
 .card .rule{color:#57422f;text-align:center;line-height:1.5;padding:0 4px;
   align-items:flex-start!important;overflow:hidden}
+/* 规则文案里的内联棋子图标：图集烘的是 64px 方格，这里用源图裁到可见轮廓等价还原 */
+.ico{display:inline-block;position:relative;overflow:hidden;vertical-align:-0.30em;margin:0 .06em}
+.ico img{position:absolute;image-rendering:auto}
+.symLink{color:#7A241A;cursor:pointer}
+.symLink .symName{text-decoration:underline}
+.symLink:hover{filter:brightness(1.25)}
 
 /* 图鉴 */
 .dexScroll{overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
@@ -277,8 +283,8 @@ const U = {
     return { x:U.num(prefix+'_x'), y:U.num(prefix+'_y'),
              w:U.num(prefix+'_width'), h:U.num(prefix+'_height') };
   },
-  /** 表里的 \n 是两个字符，落到界面上要变成真换行 */
-  multiline(key){ return U.str(key).replace(/\\n/g, '\n'); },
+  /** 换行已在 normalizeConfigText 里统一处理过，这里留着只为读代码时一眼看出"这条会换行" */
+  multiline(key){ return U.str(key); },
 };
 
 const BOARD = {};
@@ -392,6 +398,9 @@ const META = {
   jarStamp: 0,         // 上次收取罐头的时间戳
   furStamp: 0,         // 上次结算自然积攒绒毛的时间戳
   runs: 0, clears: 0,
+  playerName: '',      // 试玩登记的名字
+  bestScore: 0,        // 最高累计营业额
+  submitted: false,    // 是否已提交过
 };
 function loadMeta(){
   try {
@@ -455,6 +464,7 @@ const S = {
   pool:[], board:[], items:[], rerollTokens:0,
   buffPage:0, rosterPage:0, busy:false,
   lastIncome:{}, runFur:0, runDiscoveries:[],
+  endless:false, totalRevenue:0,
 };
 const defs = {}, itemDefs = {}, rarityDefs = {}, tutorialByTrigger = {};
 const rulesByOwner = {};
@@ -463,7 +473,31 @@ const BUFFS_PER_PAGE = 8;   // 左页 2 列 × 4 行
 const PIECES_PER_PAGE = 10; // 右页 2 列 × 5 行
 const REF = {};
 
+/**
+ * 表格里的换行是「反斜杠 + n」两个字符（Excel 存不了真换行），Unity 那边由 TMP 解释，
+ * 网页这边不处理就会把 \n 原样印在界面上。这里在装载时一次性规整，
+ * 避免每个取值点各自记得转一次——漏一个就是界面上多一个 \n。
+ */
+function normalizeConfigText(){
+  const fix = v => typeof v === 'string' ? v.split('\\n').join('\n') : v;
+  for (const key in D.ui) D.ui[key] = fix(D.ui[key]);
+  const TEXT_FIELDS = {
+    elements: ['name','type_label','rule_text','dex_hint','dex_flavor'],
+    items: ['name','rule_text'],
+    tutorials: ['copy'],
+    invites: ['notes'],
+    stages: ['name'],
+    rarities: ['label'],
+  };
+  for (const table in TEXT_FIELDS)
+    for (const row of D[table] || [])
+      for (const field of TEXT_FIELDS[table]) row[field] = fix(row[field]);
+}
+
 function indexData(){
+  normalizeConfigText();
+  NORMAL_STAGE_COUNT = D.stages.length;
+  rebuildSymbolCandidates();
   for (const e of D.elements) defs[e.key] = e;
   for (const i of D.items) itemDefs[i.key] = i;
   for (const r of D.rarities) rarityDefs[r.key] = r;
@@ -471,6 +505,8 @@ function indexData(){
   for (const r of D.rules) (rulesByOwner[r.owner_key] = rulesByOwner[r.owner_key] || []).push(r);
   for (const k in rulesByOwner) rulesByOwner[k].sort((a, b) => (a.priority || 0) - (b.priority || 0));
 }
+let NORMAL_STAGE_COUNT = 0;   // 正常经营的天数，进无尽后 D.stages 会被追加，得先记住
+const SCORE_LINE_FORMAT = '本次累计营业额：{0} 金币';
 const stage = () => D.stages[Math.min(S.stageIndex, D.stages.length - 1)];
 const isCat = e => e && (e.kind === 'cat' || e.kind === 'kitten');
 function newPiece(key){ return { key, uid: ++uidSeed, lifetimeRounds: 0 }; }
@@ -905,9 +941,338 @@ function setSfxVolume(value){
 }
 
 /* ==========================================================================
+   7.65 规则文案里的内联棋子图标（移植 FormatRuleWithSymbolLinks + 棋子图标图集）
+        Unity 把规则里出现的棋子/道具名替换成「图标 + 带下划线的名字」，整段包成
+        可点的 link，点开是一张小说明卡。图标负责一眼认出，名字负责消歧——六种会员
+        徽章缩到内联尺寸后几乎一样，光有图标读者分不出是哪一种。
+
+        Unity 那边为了喂给 TMP 先烘了一张 64px 的图集；网页直接用源图裁到 alpha
+        包围盒即可，效果等价而且更清晰。图集的裁剪规则（贴合可见轮廓、等比、居中）
+        在这里用 bbox 复现。
+   ========================================================================== */
+const SYMBOL_ICON_SCALE = 1.6;   // 图集里的 sprite.scale，图标边长 = 字号 × 它
+let symbolCandidates = [];
+
+/** 名字 → 棋子/道具。同名指向不同对象的一律丢掉，免得点开是另一个东西。 */
+function rebuildSymbolCandidates(){
+  const byName = new Map(), ambiguous = new Set();
+  const register = (name, kind, key) => {
+    if (!name || !name.trim()) return;
+    const id = kind + '|' + key;
+    if (byName.has(name)){
+      if (byName.get(name).id !== id) ambiguous.add(name);
+      return;
+    }
+    byName.set(name, { name, id, kind, key });
+  };
+  for (const e of D.elements) register(e.name, 'element', e.key);
+  for (const i of D.items) register(i.name, 'item', i.key);
+
+  symbolCandidates = [...byName.values()].filter(c => !ambiguous.has(c.name));
+  // 长名优先，否则「猫」会把「猫砂盆」截断
+  symbolCandidates.sort((a, b) =>
+    b.name.length - a.name.length || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * 把源图裁到可见轮廓、等比缩放居中塞进一个正方形，对应图集生成里的 Downscale。
+ * 尺寸一律用 em：TMP 的 sprite 是跟着字号走的，而这里的字号会被 autoShrink 反复调，
+ * 用 px 写死会导致缩完字之后图标相对变大，把文字挤出框。
+ */
+function inlineIcon(asset){
+  const em = SYMBOL_ICON_SCALE;
+  const box = el('span', 'ico');
+  box.style.cssText = `width:${em}em;height:${em}em`;
+  const b = D.bbox[asset];
+  const img = el('img', null, box);
+  img.src = ART + encodeURI(asset) + '.png';
+  if (b){
+    const [bx, by, bw, bh, W, H] = b;
+    const k = em / Math.max(bw, bh);          // 每源图像素对应多少 em
+    img.style.cssText =
+      `width:${(W * k).toFixed(4)}em;height:${(H * k).toFixed(4)}em;` +
+      `left:${(em / 2 - (bx + bw / 2) * k).toFixed(4)}em;` +
+      `top:${(em / 2 - (by + bh / 2) * k).toFixed(4)}em`;
+  } else {
+    img.style.cssText = `width:${em}em;height:${em}em;object-fit:contain;left:0;top:0`;
+  }
+  return box;
+}
+
+/**
+ * 把一段规则文案渲染进节点：命中的名字换成「图标 + 下划线名字」，其余原样。
+ * fontSize 用来定图标大小，和 TMP 里 sprite 跟随字号是一个意思。
+ */
+function renderRuleText(node, rule){
+  node.textContent = '';
+  // .txt 是 flex 容器，一旦塞进多个子节点它们就变成一行排开的 flex item 不再折行。
+  // 富文本必须回到普通块级流里，靠 text-align 居中。
+  node.style.display = 'block';
+  node.style.textAlign = 'center';
+  if (!rule){ return node; }
+  let cursor = 0, plain = '';
+  const flush = () => { if (plain){ node.appendChild(document.createTextNode(plain)); plain = ''; } };
+
+  while (cursor < rule.length){
+    const match = symbolCandidates.find(c => rule.startsWith(c.name, cursor));
+    if (!match){ plain += rule[cursor++]; continue; }
+    flush();
+    const def = match.kind === 'item' ? itemDefs[match.key] : defs[match.key];
+    const link = el('span', 'symLink', node);
+    if (def && def.asset && D.bbox[def.asset]) link.appendChild(inlineIcon(def.asset));
+    const label = el('span', 'symName', link);
+    text(label, match.name);
+    link.onclick = e => {
+      // 整张卡也可点（选牌/看详情），链接得把事件吃掉，不然会连带触发
+      e.stopPropagation();
+      if (def) showSymbolReference(def, match.kind === 'item', e.clientX, e.clientY);
+    };
+    cursor += match.name.length;
+  }
+  flush();
+  return node;
+}
+
+/**
+ * 点开内联图标弹出的小说明卡。它是独立浮层，关掉自己不会连累底下的三选一/详情，
+ * 尺寸和配色走 ui_symbol_reference_* 那一组配置。
+ */
+function showSymbolReference(def, isItem, clientX, clientY){
+  document.querySelectorAll('.symbolRef').forEach(n => n.remove());
+  const w = U.num('ui_symbol_reference_width'), h = U.num('ui_symbol_reference_height');
+  const pad = U.num('ui_symbol_reference_panel_padding');
+  const gap = U.num('ui_symbol_reference_content_spacing');
+  const screenPad = U.num('ui_symbol_reference_screen_padding');
+  const ink = U.color('ui_symbol_reference_text_color');
+
+  const layer = el('div', 'symbolRef', $('#overlays'));
+  layer.style.cssText = 'position:absolute;left:0;top:0;width:1536px;height:864px;' +
+    'pointer-events:auto;z-index:5';
+  layer.onclick = () => layer.remove();
+
+  const card = el('div', null, layer);
+  // 贴着点击位置弹，再夹回画布内，对应 PositionSymbolReference
+  const stageBox = $('#stage').getBoundingClientRect();
+  const scale = stageBox.width / 1536;
+  const px = clamp((clientX - stageBox.left) / scale + U.num('ui_symbol_reference_horizontal_gap'),
+    screenPad, 1536 - w - screenPad);
+  const py = clamp((clientY - stageBox.top) / scale - h / 2, screenPad, 864 - h - screenPad);
+  card.style.cssText = `position:absolute;left:${px}px;top:${py}px;width:${w}px;height:${h}px;` +
+    `background:${U.color('ui_symbol_reference_panel_color')};border-radius:12px;` +
+    `border:3px solid rgba(122,64,36,.55);box-shadow:4px -4px 0 rgba(48,28,16,.30);` +
+    `padding:${pad}px;display:flex;flex-direction:column;align-items:center;gap:${gap}px`;
+  card.onclick = e => e.stopPropagation();
+
+  const iconSize = U.num('ui_symbol_reference_icon_size');
+  const slot = el('div', null, card);
+  slot.style.cssText = `position:relative;width:100%;height:${iconSize}px;flex:none;` +
+    'display:flex;align-items:center;justify-content:center';
+  if (def.asset){
+    const img = el('img', null, slot);
+    img.style.cssText = 'position:absolute;left:50%;top:50%;transform-origin:50% 50%';
+    pawnVisual(img, def.asset, iconSize, iconSize, iconSize * U.num('ui_pawn_visual_fill_ratio'));
+  }
+
+  const title = el('div', 'txt', card);
+  title.style.cssText = `width:100%;flex:none;height:${U.num('ui_symbol_reference_title_height')}px;` +
+    `font-size:${U.font(U.int('ui_symbol_reference_title_font_size'))};color:${ink}`;
+  text(title, def.name);
+
+  const rarity = (rarityDefs[def.rarity] || {}).label || def.rarity;
+  const meta = el('div', 'txt', card);
+  meta.style.cssText = `width:100%;flex:none;height:${U.num('ui_symbol_reference_meta_height')}px;` +
+    `font-size:${U.font(U.int('ui_symbol_reference_meta_font_size'))};color:${ink}`;
+  text(meta, fmt(U.str('ui_card_detail_meta_format'),
+    isItem ? U.str('ui_item_detail_type_label') : def.type_label, rarity));
+
+  const rule = el('div', 'txt', card);
+  rule.style.cssText = `width:100%;flex:1;min-height:0;overflow:hidden;align-items:flex-start;` +
+    `font-size:${U.font(U.int('ui_symbol_reference_rule_font_size'))};color:${ink};line-height:1.5`;
+  // 说明卡里的规则不再递归插图标，否则会一层套一层弹不完
+  text(rule, def.rule_text || U.str('ui_card_detail_no_effect'));
+  autoShrink(rule, U.int('ui_symbol_reference_rule_font_size'));
+
+  const hint = el('div', 'txt', card);
+  hint.style.cssText = `width:100%;flex:none;height:${U.num('ui_symbol_reference_hint_height')}px;` +
+    `font-size:${U.font(U.int('ui_symbol_reference_hint_font_size'))};` +
+    `color:${U.color('ui_symbol_reference_hint_color')}`;
+  text(hint, U.str('ui_symbol_reference_close_hint'));
+}
+
+/* ==========================================================================
+   7.7 试玩排行榜
+       静态站点存不了数据，成绩要经 Supabase 的 REST 接口落库。
+       anon key 本来就是设计成可公开的，真正的门禁在 Supabase 那侧的 RLS 策略上
+       （只允许 insert 和 select，不允许 update/delete），所以能安全写进这个文件。
+       没配后端时自动退化成本机排行榜，界面照常能走通。
+   ========================================================================== */
+const LEADERBOARD = {
+  url: '',                       // 形如 https://xxxxxxxx.supabase.co
+  anonKey: '',                   // 形如 eyJhbGciOi...
+  table: 'catcafe_scores',
+  limit: 20,
+};
+const leaderboardReady = () => !!(LEADERBOARD.url && LEADERBOARD.anonKey);
+const LOCAL_BOARD_KEY = 'catcafe-html-board-v1';
+
+function restHeaders(extra){
+  return Object.assign({
+    'apikey': LEADERBOARD.anonKey,
+    'Authorization': 'Bearer ' + LEADERBOARD.anonKey,
+    'Content-Type': 'application/json',
+  }, extra || {});
+}
+
+async function submitScore(name, score){
+  const row = { name, score, days: S.stageIndex + 1, endless: S.endless };
+  if (!leaderboardReady()){
+    // 没接后端就存本机，至少排行榜界面是通的
+    try {
+      const local = JSON.parse(localStorage.getItem(LOCAL_BOARD_KEY) || '[]');
+      local.push(Object.assign({ created_at: new Date().toISOString() }, row));
+      localStorage.setItem(LOCAL_BOARD_KEY, JSON.stringify(local));
+    } catch (e){ /* 无痕模式就算了 */ }
+    return { ok:true, local:true };
+  }
+  try {
+    const res = await fetch(`${LEADERBOARD.url}/rest/v1/${LEADERBOARD.table}`, {
+      method:'POST', headers: restHeaders({ 'Prefer':'return=minimal' }), body: JSON.stringify(row),
+    });
+    return { ok: res.ok, local:false, error: res.ok ? null : `${res.status} ${await res.text()}` };
+  } catch (e){
+    return { ok:false, local:false, error:String(e) };
+  }
+}
+
+async function fetchLeaderboard(){
+  if (!leaderboardReady()){
+    let local = [];
+    try { local = JSON.parse(localStorage.getItem(LOCAL_BOARD_KEY) || '[]'); } catch (e){}
+    local.sort((a, b) => b.score - a.score);
+    return { rows: local.slice(0, LEADERBOARD.limit), local:true };
+  }
+  try {
+    const query = `select=name,score,days,created_at&order=score.desc&limit=${LEADERBOARD.limit}`;
+    const res = await fetch(`${LEADERBOARD.url}/rest/v1/${LEADERBOARD.table}?${query}`,
+      { headers: restHeaders() });
+    if (!res.ok) return { rows:[], local:false, error:`${res.status}` };
+    return { rows: await res.json(), local:false };
+  } catch (e){
+    return { rows:[], local:false, error:String(e) };
+  }
+}
+
+/** 登记姓名。没填过名字就先走这一步，之后一直沿用，可在退出前改。 */
+function askPlayerName(onDone){
+  closeOverlays();
+  const { body } = newOverlay('登 记 姓 名', 660, 460, false);
+  bodyText(body, '写下你的名字，成绩会记在这个名字下。', 16, '#4d3021', 520);
+
+  const input = el('input', null, body);
+  input.type = 'text';
+  input.maxLength = 16;
+  input.value = META.playerName || '';
+  input.placeholder = '店长的名字';
+  input.style.cssText = 'width:360px;height:52px;flex:none;text-align:center;border-radius:8px;' +
+    'border:2px solid rgba(140,102,68,.55);background:rgba(255,248,232,.9);color:#472c1c;' +
+    `font-family:inherit;font-weight:700;font-size:${U.font(20)};outline:none`;
+  setTimeout(() => input.focus(), 50);
+
+  const warn = el('div', 'txt', body);
+  warn.style.cssText = `height:24px;flex:none;font-size:${U.font(14)};color:#a2503a`;
+
+  const confirm = () => {
+    const name = input.value.trim().slice(0, 16);
+    if (!name){ text(warn, '总得有个名字吧'); return; }
+    META.playerName = name;
+    saveMeta();
+    closeOverlays();
+    onDone();
+  };
+  input.onkeydown = e => { if (e.key === 'Enter') confirm(); };
+  paperButton(body, '就这个名字', 300, 56, 'primary', confirm);
+}
+
+/** 退出流程：先提示成绩即将提交，确认后提交，再弹全服排行榜 */
+function confirmSubmitAndExit(){
+  closeOverlays();
+  const score = META.bestScore || 0;
+  const { body } = newOverlay('结 束 试 玩', 700, 520, false);
+  bodyText(body,
+    `${META.playerName || '无名店长'}，你的最高成绩即将提交到排行榜。\n\n` +
+    `最高累计营业额：${score} 金币`,
+    18, '#40291c', 560).style.flex = '1';
+
+  const status = el('div', 'txt', body);
+  status.style.cssText = `height:26px;flex:none;font-size:${U.font(14)};color:#6b5137`;
+
+  const actions = el('div', null, body);
+  actions.style.cssText = 'display:flex;gap:12px;align-items:center';
+  const submit = paperButton(actions, '提交成绩', 260, 54, 'primary', async () => {
+    submit.classList.add('off');
+    text(status, '正在提交…');
+    const result = await submitScore(META.playerName || '无名店长', score);
+    if (!result.ok){
+      submit.classList.remove('off');
+      text(status, '提交失败：' + (result.error || '网络不通'));
+      return;
+    }
+    await showLeaderboard(result.local);
+  });
+  paperButton(actions, '再玩一会儿', 220, 54, 'secondary', closeOverlays);
+}
+
+async function showLeaderboard(localOnly){
+  closeOverlays();
+  const { body } = newOverlay('全 服 排 行 榜', 820, 720, true);
+  const loading = bodyText(body, '正在读取排行榜…', 16, '#6b5137', 700);
+
+  const data = await fetchLeaderboard();
+  loading.remove();
+
+  if (data.error){
+    bodyText(body, '排行榜读取失败：' + data.error, 16, '#a2503a', 700);
+  } else if (!data.rows.length){
+    bodyText(body, '还没有人上榜，你是第一个。', 16, '#6b5137', 700);
+  } else {
+    const list = el('div', 'dexScroll', body);
+    list.style.cssText = 'width:700px;flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;padding:4px';
+    data.rows.forEach((row, i) => {
+      const mine = row.name === META.playerName;
+      const line = el('div', null, list);
+      line.style.cssText = 'display:flex;align-items:center;gap:14px;padding:8px 16px;flex:none;' +
+        'border-radius:10px;border:2px solid rgba(140,102,68,.35);' +
+        (mine ? 'background:rgba(255,226,168,.85);' : 'background:rgba(255,246,225,.55);');
+      const rank = el('div', null, line);
+      rank.style.cssText = `width:52px;flex:none;font-weight:700;font-size:${U.font(19)};` +
+        `color:${i < 3 ? '#b3762a' : '#6b5137'}`;
+      text(rank, '#' + (i + 1));
+      const who = el('div', null, line);
+      who.style.cssText = `flex:1;font-weight:700;font-size:${U.font(17)};color:#472c1c;` +
+        'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      text(who, row.name);
+      if (row.days != null){
+        const days = el('div', null, line);
+        days.style.cssText = `flex:none;font-size:${U.font(14)};color:#7f6549;width:90px;text-align:right`;
+        text(days, '第 ' + row.days + ' 天');
+      }
+      const value = el('div', null, line);
+      value.style.cssText = `flex:none;width:150px;text-align:right;font-weight:700;` +
+        `font-size:${U.font(18)};color:#8a5a2a`;
+      text(value, row.score + ' 金币');
+    });
+  }
+
+  if (localOnly || data.local)
+    bodyText(body, '（当前是本机榜单，接上后端后会换成全服数据）', 13, '#8a7256', 700);
+  paperButton(body, U.str('ui_home_settings_close'), 240, 52, 'secondary', closeOverlays);
+}
+
+/* ==========================================================================
    8. 共用弹窗
    ========================================================================== */
 function closeOverlays(){ $('#overlays').innerHTML = ''; }
+function closeSymbolRefs(){ document.querySelectorAll('.symbolRef').forEach(n => n.remove()); }
 
 /** 三层纸叠 + 主纸板 + 缎带标题，尺寸取自 NewOverlay */
 function newOverlay(title, panelW, panelH, dismissable, opts){
@@ -1025,7 +1390,10 @@ function buildStartScreen(){
     if (name === 'start-glow') img.id = 'glowLayer';
   }
   const buttons = [
-    ['start-button-play', 'ui_start_play', '开始游戏', () => { showScreen('home'); enterHome(); }],
+    ['start-button-play', 'ui_start_play', '开始游戏', () => {
+      const go = () => { showScreen('home'); enterHome(); };
+      if (META.playerName) go(); else askPlayerName(go);
+    }],
     ['start-button-shops', 'ui_start_shops', '故事', showShops],
     ['start-button-settings', 'ui_start_settings', '设置', showStartSettings],
     ['start-button-quit', 'ui_start_quit', '退出', confirmQuit],
@@ -1044,9 +1412,12 @@ function buildStartScreen(){
 }
 function refreshStartScreen(){
   const cats = discoveredCats().length;
-  text(REF.startShopLine, META.runs === 0
+  const base = META.runs === 0
     ? U.str('ui_shop_summary_empty')
-    : fmt(U.str('ui_shop_summary_format'), META.runs, META.clears, cats));
+    : fmt(U.str('ui_shop_summary_format'), META.runs, META.clears, cats);
+  const who = META.playerName ? META.playerName + ' · ' : '';
+  const best = META.bestScore ? ' · 最高 ' + META.bestScore + ' 金币' : '';
+  text(REF.startShopLine, who + base + best);
 }
 
 function showShops(){
@@ -1060,11 +1431,9 @@ function showShops(){
 }
 function showStartSettings(){ showSettingsOverlay(U.str('ui_start_settings_title'), false); }
 function confirmQuit(){
-  closeOverlays();
-  const { body } = newOverlay(U.str('ui_start_confirm_title'), 640, 420, true);
-  bodyText(body, U.str('ui_start_quit_confirm'), 18, '#40291c', 500);
-  if (DEV_NOTES) bodyText(body, '（网页版关不掉自己，请直接关标签页）', 14, '#7a5c40', 500);
-  paperButton(body, U.str('ui_common_cancel_label'), 220, 52, 'secondary', closeOverlays);
+  // 试玩版的"退出"不是关窗口，而是收摊结算：提示成绩即将提交 → 提交 → 看全服榜
+  if (!META.playerName){ askPlayerName(confirmSubmitAndExit); return; }
+  confirmSubmitAndExit();
 }
 
 /* ==========================================================================
@@ -1327,7 +1696,7 @@ function openDex(){
       const hint = el('div', 'hint', card);
       hint.style.cssText = `width:100%;height:${U.num('ui_home_dex_hint_height')}px;` +
         `font-size:${U.font(U.int('ui_home_dex_hint_font_size'))}`;
-      text(hint, def.rule_text || '');
+      renderRuleText(hint, def.rule_text || '');
       autoShrink(hint, U.int('ui_home_dex_hint_font_size'));
     } else {
       const hint = el('div', 'hint', card);
@@ -1941,7 +2310,7 @@ function pulseCell(index, seconds, peak, markerAlpha){
 
 async function countMoneyTo(target){
   const from = S.money, steps = 12;
-  if (target > from) playSfx('reward');
+  if (target > from){ playSfx('reward'); S.totalRevenue += target - from; }
   for (let i = 1; i <= steps; i++){
     S.money = Math.round(from + (target - from) * (i / steps));
     text(REF.goalText, S.money + ' / ' + stage().target);
@@ -2187,7 +2556,7 @@ function choiceCard(parent, def){
 
   const rule = slot(U.num('ui_choice_rule_top'), U.num('ui_choice_rule_bottom'), 0.09, 0.91);
   rule.classList.add('rule');
-  text(rule, def.rule_text || '');
+  renderRuleText(rule, def.rule_text || '');
   autoShrink(rule, U.int('ui_choice_card_rule_font_size'));
   return card;
 }
@@ -2284,49 +2653,101 @@ function showItemChoice(tier, onDone){
 /* ==========================================================================
    17. 天结算 / 局结束
    ========================================================================== */
+/**
+ * 无尽挑战的目标曲线，移植 CalculateNextEndlessTarget：
+ * 上一天目标 ×(1+growth) + flat，再向上取整到 round_to 的倍数，且至少比上一天多 1。
+ */
+function nextEndlessTarget(previousTarget){
+  const growth = Math.max(0, U.numOr('endless_target_growth_rate', 0.15));
+  const flat = Math.max(0, U.numOr('endless_target_flat_increment', 10));
+  const roundTo = Math.max(1, U.numOr('endless_target_round_to', 5));
+  const raw = previousTarget * (1 + growth) + flat;
+  return Math.ceil(Math.max(previousTarget + 1, raw) / roundTo) * roundTo;
+}
+/** 追加一天无尽关卡，字段沿用上一天，只有名字/波次/目标/稀有度池不同 */
+function appendEndlessStage(previous, day, target){
+  D.stages.push({
+    id: day,
+    name: fmt(U.str('endless_stage_name_format'), day),
+    rounds: Math.max(1, U.numOr('endless_rounds', 6)),
+    target,
+    rarity_context: U.str('endless_rarity_context'),
+    clear_item_tier: previous.clear_item_tier,
+    clear_reward_min_rarity: previous.clear_reward_min_rarity,
+    is_final: false,
+    enabled: true,
+  });
+}
+
 async function endStage(){
   closeOverlays();
   const cleared = S.money >= stage().target;
-  const last = S.stageIndex >= D.stages.length - 1;
+  const current = stage();
+  // 正常经营的最后一天；进了无尽之后就再也没有"最后一天"了
+  const finishedNormalRun = cleared && !S.endless && S.stageIndex >= NORMAL_STAGE_COUNT - 1;
 
   if (cleared){
     META.cans += U.numOr('meta_cans_per_stage_clear', 10);
     saveMeta();
   }
 
+  // 通关正常经营后询问是否续摊；这是无尽挑战的唯一入口，和 OfferEndlessChallenge 一致
+  if (finishedNormalRun && String(U.strOr('endless_enabled', 'True')).toLowerCase() === 'true'){
+    const nextDay = S.stageIndex + 2;
+    const target = nextEndlessTarget(current.target);
+    const { body } = newOverlay(U.str('ui_endless_offer_title'), 680, 530, false);
+    bodyText(body, fmt(U.multiline('ui_endless_offer_copy_format'),
+      S.stageIndex + 1, nextDay, target), 18, '#40291c', 604).style.flex = '1';
+    paperButton(body, U.str('ui_endless_continue_label'), 360, 62, 'primary', () => {
+      closeOverlays();
+      S.endless = true;
+      appendEndlessStage(current, nextDay, target);
+      advanceToNextStage(current.clear_item_tier);
+    });
+    paperButton(body, U.str('ui_endless_finish_label'), 300, 52, 'secondary',
+      () => { closeOverlays(); endRun(true); });
+    return;
+  }
+
   let title, copy, button;
   if (!cleared){
-    title = U.str('ui_run_failure_title');
-    copy = fmt(U.str('ui_run_failure_copy_format'), stage().target, collectionLine());
-    button = U.str('ui_run_return_collection_label');
-  } else if (last){
-    title = U.str('ui_run_victory_title');
-    copy = fmt(U.str('ui_run_victory_copy_format'), stage().target, collectionLine());
+    title = S.endless ? U.str('ui_endless_result_title') : U.str('ui_run_failure_title');
+    copy = S.endless
+      ? fmt(U.multiline('ui_endless_failure_copy_format'),
+            S.stageIndex + 1, current.target, collectionLine())
+      : fmt(U.str('ui_run_failure_copy_format'), current.target, collectionLine());
     button = U.str('ui_run_return_collection_label');
   } else {
-    title = fmt(U.str('ui_run_stage_clear_title_format'), S.stageIndex + 1);
-    copy = fmt(U.str('ui_run_stage_clear_copy_format'), stage().target, S.money);
+    title = fmt(U.str(S.endless ? 'ui_endless_stage_clear_title_format'
+                                : 'ui_run_stage_clear_title_format'), S.stageIndex + 1);
+    copy = fmt(U.str('ui_run_stage_clear_copy_format'), current.target, S.money);
     button = U.str('ui_run_stage_clear_button');
   }
 
   const { body } = newOverlay(title, 680, 530, false);
-  const copyNode = bodyText(body, copy, 18, '#40291c', 604);
-  copyNode.style.flex = '1';
+  bodyText(body, copy + '\n' + fmt(SCORE_LINE_FORMAT, S.totalRevenue),
+    18, '#40291c', 604).style.flex = '1';
 
   paperButton(body, button, 360, 62, 'primary', async () => {
     closeOverlays();
-    if (!cleared || last){ await endRun(cleared); return; }
-    const tier = stage().clear_item_tier;
-    S.stageIndex += 1;
-    S.stageRound = 0;
-    S.money = 0;
-    S.rerollTokens += U.numOr('stage_clear_reroll_reward', 1);
-    updateHud();
-    showItemChoice(tier, () => showChoices());
+    if (!cleared){ await endRun(false); return; }
+    // 无尽模式下一天在这里现算现加，和 Unity 的 stages.Add 时机一致
+    if (S.endless && S.stageIndex + 1 >= D.stages.length)
+      appendEndlessStage(current, S.stageIndex + 2, nextEndlessTarget(current.target));
+    advanceToNextStage(current.clear_item_tier);
   });
 
   if (!cleared) await notify('run_first_failure');
   await notify('run_first_summary', [$('#overlays .modal')]);
+}
+
+function advanceToNextStage(tier){
+  S.stageIndex += 1;
+  S.stageRound = 0;
+  S.money = 0;
+  S.rerollTokens += U.numOr('stage_clear_reroll_reward', 1);
+  updateHud();
+  showItemChoice(tier, () => showChoices());
 }
 
 function collectionLine(){
@@ -2338,6 +2759,8 @@ function collectionLine(){
 async function endRun(cleared){
   META.runs += 1;
   if (cleared) META.clears += 1;
+  // 排行榜比的是单局累计营业额，取历史最高
+  if (S.totalRevenue > (META.bestScore || 0)) META.bestScore = S.totalRevenue;
   // 没通关的那次，路上的罐头要打折
   const earned = Math.round(S.money * U.numOr('meta_cans_coin_rate', 0.2) /
     (cleared ? 1 : U.numOr('meta_cans_fail_divisor', 2)));
@@ -2415,9 +2838,9 @@ function detailOverlay(name, def, metaLine, extraLine){
   if (extraLine)
     row(extraLine, U.int('ui_card_detail_income_font_size'),
         U.num('ui_card_detail_income_height'), U.color('ui_card_detail_rule_color'));
-  const rule = row(def.rule_text || U.str('ui_card_detail_no_effect'),
-      U.int('ui_card_detail_rule_font_size'),
+  const rule = row('', U.int('ui_card_detail_rule_font_size'),
       U.num('ui_card_detail_rule_height'), U.color('ui_card_detail_rule_color'));
+  renderRuleText(rule, def.rule_text || U.str('ui_card_detail_no_effect'));
   autoShrink(rule, U.int('ui_card_detail_rule_font_size'));
 
   // 全透明背景下没有任何"这是弹窗"的提示，补一行收起说明（文案取自表里已有的键）
@@ -2464,6 +2887,8 @@ async function startRun(){
   S.money = 0; S.round = 0; S.stageIndex = 0; S.stageRound = 0;
   S.pool = []; S.items = []; S.buffPage = 0; S.rosterPage = 0;
   S.lastIncome = {}; S.runFur = 0; S.runDiscoveries = [];
+  S.endless = false; S.totalRevenue = 0;
+  D.stages.length = NORMAL_STAGE_COUNT;   // 丢掉上一局追加的无尽关卡
   S.rerollTokens = U.numOr('initial_reroll_tokens', 1);
   for (const row of D.initialDeck)
     for (let i = 0; i < row.count; i++) S.pool.push(newPiece(row.element_key));
