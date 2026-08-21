@@ -152,16 +152,16 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 
 .cardrail{display:flex;align-items:center;justify-content:center}
 .card{position:relative;cursor:pointer;flex:none;background-size:100% 100%;
-  isolation:isolate;transition:transform .14s ease,filter .14s ease}
+  transition:transform .14s ease,filter .14s ease}
 .card:hover{transform:translateY(-6px);filter:brightness(1.05)}
 .card .slot{position:absolute;display:flex;align-items:center;justify-content:center}
 .card .art img{position:absolute;left:50%;top:50%;transform-origin:50% 50%;
   filter:drop-shadow(-2px 1.5px 0 rgba(46,26,14,.24));z-index:2}
-/* 稀有度底色：整张卡的底纸按 Rarities 表换色相。用 color 混合而不是盖死色块，
-   纸纹、图框的明暗和描边都保留；文字和棋子图都画在它上面，不受影响。 */
-.rarityWash{position:absolute;left:0;top:0;width:100%;height:100%;
-  mix-blend-mode:color;opacity:.82;pointer-events:none;z-index:0}
-.card .slot{z-index:1}
+/* 稀有度底色：只换道具背后那块面板，卡片其余部分保持原本的纸色。
+   颜色取 Rarities 表的 color，内阴影留住原图框的凹陷感，不做整卡混色。 */
+.rarityWash{position:absolute;left:4.5%;top:3.5%;right:4.5%;bottom:3.5%;border-radius:4px;
+  box-shadow:inset 0 0 14px rgba(40,22,10,.28), inset 0 2px 0 rgba(255,255,255,.10);
+  pointer-events:none;z-index:1}
 .card .badge{display:flex;align-items:center;justify-content:center;color:#fff2da;font-weight:700;
   background-size:100% 100%;background-repeat:no-repeat;text-shadow:0 1px 0 rgba(60,32,18,.5)}
 .card .nm{color:#472c1c;font-weight:700}
@@ -2242,6 +2242,11 @@ const SPEED = () => U.numOr('settlement_speed_multiplier', 1.5);
  * 这里整体乘一个系数试手感。定下来之后要写回配置表，别让代码长期盖着表。
  */
 const COIN_FX_SCALE = 1.6;
+/**
+ * 三选一卡面字号放大倍数。表里的 ui_choice_card_*_font_size 是按 Unity 那版调的，
+ * 卡片实际显示偏小。定下来之后要写回配置表，别让代码长期盖着表。
+ */
+let CHOICE_FONT_SCALE = 1.12;
 const sec = s => wait(s * 1000 / SPEED());
 
 function cellCenter(index){
@@ -2581,7 +2586,6 @@ function choiceCard(parent, def){
   const rarity = rarityDefs[def.rarity] || { color:'#9C7350', label:'普通', badge:'badge-brown-v2' };
   // 稀有度用 Rarities 表的 color 上到描边，一眼能分级
   card.style.filter = `drop-shadow(3px -3px 0 ${rarity.color}dd)`;
-  el('div', 'rarityWash', card).style.background = rarity.color;
 
   // 卡面槽位按 reward-card 美术的归一化坐标摆（PlaceOnCard）
   const slot = (top, bottom, left, right) =>
@@ -2589,6 +2593,7 @@ function choiceCard(parent, def){
 
   const art = slot(0.085, 0.545, 0.10, 0.90);
   art.classList.add('art');
+  el('div', 'rarityWash', art).style.background = rarity.color;
   if (def.asset){
     const aw = w * 0.80 - 12, ah = h * (0.545 - 0.085) - 12;
     pawnVisual(el('img', null, art), def.asset, aw, ah,
@@ -2598,18 +2603,18 @@ function choiceCard(parent, def){
   const band = slot(U.num('ui_choice_rarity_top'), U.num('ui_choice_rarity_bottom'), 0.16, 0.84);
   band.classList.add('badge');
   band.style.backgroundImage = `url('${ART}PaperSkin/${rarity.badge}.png')`;
-  band.style.fontSize = U.font(U.int('ui_choice_card_rarity_font_size'));
+  band.style.fontSize = U.font(U.int('ui_choice_card_rarity_font_size') * CHOICE_FONT_SCALE);
   text(band, rarity.label);
 
   const nm = slot(U.num('ui_choice_name_top'), U.num('ui_choice_name_bottom'), 0.10, 0.90);
   nm.classList.add('nm');
   text(nm, def.name);
-  autoShrink(nm, U.int('ui_choice_card_name_font_size'));
+  autoShrink(nm, U.int('ui_choice_card_name_font_size') * CHOICE_FONT_SCALE);
 
   const rule = slot(U.num('ui_choice_rule_top'), U.num('ui_choice_rule_bottom'), 0.09, 0.91);
   rule.classList.add('rule');
   renderRuleText(rule, def.rule_text || '');
-  autoShrink(rule, U.int('ui_choice_card_rule_font_size'));
+  autoShrink(rule, U.int('ui_choice_card_rule_font_size') * CHOICE_FONT_SCALE);
   return card;
 }
 
