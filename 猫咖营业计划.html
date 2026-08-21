@@ -1143,8 +1143,11 @@ function showSymbolReference(def, isItem, clientX, clientY){
        没配后端时自动退化成本机排行榜，界面照常能走通。
    ========================================================================== */
 const LEADERBOARD = {
-  url: '',                       // 形如 https://xxxxxxxx.supabase.co
-  anonKey: '',                   // 形如 eyJhbGciOi...
+  // Supabase 项目根地址（不含 /rest/v1，下面会自己拼）
+  url: 'https://cgjrukulsamqrtrzqerh.supabase.co',
+  // publishable key（新版，替代旧的 anon JWT）。它就是设计给前端公开用的，
+  // 真正的门禁在 Supabase 那侧的 RLS 策略：只放行 insert 和 select。
+  anonKey: 'sb_publishable_8QVg2fL1aGkDVWMeanWL3A_8i_4kYHH',
   table: 'catcafe_scores',
   limit: 20,
 };
@@ -1152,11 +1155,12 @@ const leaderboardReady = () => !!(LEADERBOARD.url && LEADERBOARD.anonKey);
 const LOCAL_BOARD_KEY = 'catcafe-html-board-v1';
 
 function restHeaders(extra){
-  return Object.assign({
-    'apikey': LEADERBOARD.anonKey,
-    'Authorization': 'Bearer ' + LEADERBOARD.anonKey,
-    'Content-Type': 'application/json',
-  }, extra || {});
+  const headers = { 'apikey': LEADERBOARD.anonKey, 'Content-Type': 'application/json' };
+  // 旧版 anon key 是 JWT，PostgREST 认 Authorization: Bearer；新版 sb_publishable_
+  // 是不透明串，塞进 Bearer 可能被判 401，只走 apikey 头即可。
+  if (LEADERBOARD.anonKey.startsWith('eyJ'))
+    headers['Authorization'] = 'Bearer ' + LEADERBOARD.anonKey;
+  return Object.assign(headers, extra || {});
 }
 
 async function submitScore(name, score){
