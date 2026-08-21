@@ -77,7 +77,20 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 .cell .marker{position:absolute;left:0;top:0;width:126px;height:126px;border-radius:12px;
   background:#ffd27a;opacity:0;pointer-events:none;transition:opacity .16s ease;mix-blend-mode:screen}
 .cell.linked .marker{opacity:var(--markerAlpha,.24)}
-.cell.linked .token img{filter:drop-shadow(-3px 2px 0 rgba(46,26,14,.30)) drop-shadow(0 0 10px rgba(255,190,90,.85))}
+/* 结算辉光：Unity 用棋子的 alpha 遮罩 + 专用 Shader 做软发光，CSS 的 drop-shadow
+   同样贴合 alpha 轮廓，叠三层就是由内到外的光晕。呼吸参数照 CatCafeGlowPulse：
+   周期 0.9s、强度在 0.82~1 之间摆动。强调色取 Unity 的 (1, 0.82, 0.35) = #FFD159。 */
+@keyframes pieceGlowBreath{
+  0%,100%{filter:drop-shadow(-3px 2px 0 rgba(46,26,14,.30))
+                 drop-shadow(0 0 6px rgba(255,209,89,.78))
+                 drop-shadow(0 0 16px rgba(255,209,89,.60))
+                 drop-shadow(0 0 30px rgba(255,176,54,.42))}
+  50%    {filter:drop-shadow(-3px 2px 0 rgba(46,26,14,.30))
+                 drop-shadow(0 0 8px rgba(255,209,89,.95))
+                 drop-shadow(0 0 20px rgba(255,209,89,.78))
+                 drop-shadow(0 0 38px rgba(255,176,54,.56))}
+}
+.cell.linked .token img{animation:pieceGlowBreath .9s ease-in-out infinite}
 #chainLines{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 
 /* ── 卷轴 ── */
@@ -160,7 +173,7 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 /* 稀有度底色：只换道具背后那块面板，卡片其余部分保持原本的纸色。
    颜色取 Rarities 表的 color，内阴影留住原图框的凹陷感，不做整卡混色。 */
 .rarityWash{position:absolute;left:4.5%;top:3.5%;right:4.5%;bottom:3.5%;border-radius:4px;
-  box-shadow:inset 0 0 14px rgba(40,22,10,.28), inset 0 2px 0 rgba(255,255,255,.10);
+  box-shadow:inset 0 0 12px rgba(40,22,10,.16), inset 0 2px 0 rgba(255,255,255,.16);
   pointer-events:none;z-index:1}
 .card .badge{display:flex;align-items:center;justify-content:center;color:#fff2da;font-weight:700;
   background-size:100% 100%;background-repeat:no-repeat;text-shadow:0 1px 0 rgba(60,32,18,.5)}
@@ -2248,12 +2261,49 @@ const SPEED = () => U.numOr('settlement_speed_multiplier', 1.5);
  * ui_reward_label_coin_size(28) 是按 Unity 那版调的，在浏览器里看偏小，
  * 这里整体乘一个系数试手感。定下来之后要写回配置表，别让代码长期盖着表。
  */
-const COIN_FX_SCALE = 1.6;
+/** 散射金币放大倍数。表里 base_size 54，再乘配置的 0.7~1.5 随机档，太大会盖住整个棋盘。 */
+let COIN_BURST_SCALE = 1.75;
+/** 飘字上那枚金币和它的光晕的放大倍数，和散射金币分开调。 */
+let COIN_LABEL_SCALE = 1.9;
 /**
  * 三选一卡面字号放大倍数。表里的 ui_choice_card_*_font_size 是按 Unity 那版调的，
  * 卡片实际显示偏小。定下来之后要写回配置表，别让代码长期盖着表。
  */
 let CHOICE_FONT_SCALE = 1.12;
+
+/**
+ * 卡面稀有度面板的提亮参数。Rarities 表里的颜色是给徽章和描边调的，偏灰，
+ * 铺成整块面板就发闷。这里只在面板这一处按 HSL 提饱和度和亮度，
+ * 表里的原色仍然是徽章、描边、品质色签的唯一来源，不动它。
+ */
+const PANEL_MIN_SATURATION = 0.46;   // 饱和度下限，低于它就抬到这个值
+const PANEL_LIGHTNESS_GAIN = 1.14;   // 亮度倍数
+const PANEL_MAX_LIGHTNESS  = 0.62;   // 亮度上限，别把深色档冲成白板
+
+function hexToHsl(hex){
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  const l = (max + min) / 2;
+  if (!d) return { h:0, s:0, l };
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0));
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return { h: h * 60, s, l };
+}
+
+/** 表里的稀有度色 → 面板用的提亮版本 */
+function panelColor(hex){
+  const hsl = hexToHsl(hex);
+  if (!hsl) return hex;
+  const s = Math.max(hsl.s, PANEL_MIN_SATURATION);
+  const l = Math.min(hsl.l * PANEL_LIGHTNESS_GAIN, PANEL_MAX_LIGHTNESS);
+  return `hsl(${hsl.h.toFixed(1)} ${(s * 100).toFixed(1)}% ${(l * 100).toFixed(1)}%)`;
+}
 const sec = s => wait(s * 1000 / SPEED());
 
 function cellCenter(index){
@@ -2271,12 +2321,12 @@ function rewardLabel(index, amount, color){
   label.style.color = color;
   label.style.textShadow = '2px 2px 0 rgba(40,24,14,.85)';
 
-  const g = U.num('ui_reward_label_glow_size') * COIN_FX_SCALE;
+  const g = U.num('ui_reward_label_glow_size') * COIN_LABEL_SCALE;
   const glow = el('div', 'glow', label);
   glow.style.width = g + 'px'; glow.style.height = g + 'px';
   glow.style.left = (w / 2 + U.num('ui_reward_label_coin_x')) + 'px';
 
-  const cs = U.num('ui_reward_label_coin_size') * COIN_FX_SCALE;
+  const cs = U.num('ui_reward_label_coin_size') * COIN_LABEL_SCALE;
   const coin = el('img', null, label);
   coin.src = ART + 'InGameUI/coin.png';
   coin.style.width = cs + 'px'; coin.style.height = cs + 'px';
@@ -2300,7 +2350,7 @@ function rewardLabel(index, amount, color){
 function coinBurst(index){
   const c = cellCenter(index);
   const count = U.numOr('settlement_rare_chain_coin_count', 8);
-  const base = U.numOr('settlement_rare_chain_coin_base_size', 54) * COIN_FX_SCALE;
+  const base = U.numOr('settlement_rare_chain_coin_base_size', 54) * COIN_BURST_SCALE;
   const vMin = U.numOr('settlement_rare_chain_coin_min_speed', 276);
   const vMax = U.numOr('settlement_rare_chain_coin_max_speed', 444);
   for (let i = 0; i < count; i++){
@@ -2600,7 +2650,7 @@ function choiceCard(parent, def){
 
   const art = slot(0.085, 0.545, 0.10, 0.90);
   art.classList.add('art');
-  el('div', 'rarityWash', art).style.background = rarity.color;
+  el('div', 'rarityWash', art).style.background = panelColor(rarity.color);
   if (def.asset){
     const aw = w * 0.80 - 12, ah = h * (0.545 - 0.085) - 12;
     pawnVisual(el('img', null, art), def.asset, aw, ah,
