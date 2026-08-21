@@ -168,6 +168,16 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 .symLink{color:#7A241A;cursor:pointer}
 .symLink .symName{text-decoration:underline}
 .symLink:hover{filter:brightness(1.25)}
+/* 规则文案缩到最小字号还装不下时，允许滚轮翻看。Unity 那边是溢出到框外，
+   两种都不好读，这里给个能滚的框 + 底部渐隐提示还有内容。 */
+.scrollText{overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(122,64,36,.45) transparent}
+.scrollText::-webkit-scrollbar{width:5px}
+.scrollText::-webkit-scrollbar-thumb{background:rgba(122,64,36,.45);border-radius:3px}
+.scrollText::-webkit-scrollbar-track{background:transparent}
+.hasMore{position:relative}
+.hasMore::after{content:'';position:absolute;left:0;right:0;bottom:0;height:16px;pointer-events:none;
+  background:linear-gradient(180deg,rgba(240,220,186,0),rgba(240,220,186,.92))}
+.card .hasMore::after{background:linear-gradient(180deg,rgba(226,201,163,0),rgba(226,201,163,.95))}
 
 /* 图鉴 */
 .dexScroll{overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
@@ -346,8 +356,29 @@ function autoShrink(node, size){
   const min = Math.max(9, max - 6);
   for (let px = max; px >= min; px -= 0.5){
     node.style.fontSize = px.toFixed(1) + 'px';
-    if (node.scrollHeight <= node.clientHeight + 1) return;
+    if (node.scrollHeight <= node.clientHeight + 1){ markScrollable(node); return; }
   }
+  markScrollable(node);
+}
+
+/**
+ * 缩到最小字号仍装不下就让它能滚。TMP 的做法是溢出到框外，网页这边溢出会压到别的
+ * 元素上，改成可滚 + 底部渐隐，至少读得全。滚轮事件要吃掉，别把整页带着滚。
+ */
+function markScrollable(node){
+  const more = node.scrollHeight > node.clientHeight + 1;
+  node.classList.toggle('scrollText', more);
+  node.classList.toggle('hasMore', more);
+  if (!more || node.dataset.scrollBound) return;
+  node.dataset.scrollBound = '1';
+  node.addEventListener('wheel', e => {
+    e.stopPropagation();
+    node.scrollTop += e.deltaY;
+    // 滚到底就把渐隐收掉，免得看着像还有内容
+    node.classList.toggle('hasMore', node.scrollTop + node.clientHeight < node.scrollHeight - 1);
+  }, { passive:true });
+  // 卡片本身可点选，滚动时别误触
+  node.addEventListener('pointerdown', e => e.stopPropagation());
 }
 /** 把任意节点的位置换算回 1536×864 设计坐标，聚光框要用 */
 function designRect(node){
@@ -1263,9 +1294,24 @@ async function showLeaderboard(localOnly){
     });
   }
 
-  if (localOnly || data.local)
+  if ((localOnly || data.local) && DEV_NOTES)
     bodyText(body, '（当前是本机榜单，接上后端后会换成全服数据）', 13, '#8a7256', 700);
-  paperButton(body, U.str('ui_home_settings_close'), 240, 52, 'secondary', closeOverlays);
+
+  const actions = el('div', null, body);
+  actions.style.cssText = 'display:flex;gap:12px;align-items:center;flex:none';
+  paperButton(actions, '交给下一位', 260, 52, 'primary', resetForNextPlayer);
+  paperButton(actions, U.str('ui_home_settings_close'), 200, 52, 'secondary', closeOverlays);
+}
+
+/**
+ * 试玩机交接：上一位的名字、进度和教程已读位全部清掉，重新载入页面。
+ * 榜单数据存在另一个 key 里，不会被这里抹掉。
+ */
+function resetForNextPlayer(){
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch (e){ /* 无痕模式本来就没存 */ }
+  location.reload();
 }
 
 /* ==========================================================================
