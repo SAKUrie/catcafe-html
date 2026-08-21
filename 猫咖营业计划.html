@@ -167,6 +167,21 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 .card{position:relative;cursor:pointer;flex:none;background-size:100% 100%;
   transition:transform .14s ease,filter .14s ease}
 .card:hover{transform:translateY(-6px);filter:brightness(1.05)}
+/* 卡片入场，参数照 PlayCardEntrance：错开 0.06s、单张 0.18s、从 alpha0 + 0.88 倍放大到位 */
+@keyframes cardEnter{from{opacity:0;transform:scale(.88)}to{opacity:1;transform:scale(1)}}
+.card.entering{animation:cardEnter .18s cubic-bezier(.22,.61,.36,1) both}
+/* 联动受影响的棋子会挨一下：CatCafeLinkedPieceShake 的水平 7px / 垂直 2.2px /
+   旋转 4 度 / 4.25 次振荡 / 阻尼衰减，这里用同样的参数打成关键帧。 */
+@keyframes linkedShake{
+  0%  {transform:translate(0,0) rotate(0deg)}
+  12% {transform:translate(7px,-2.2px) rotate(4deg)}
+  27% {transform:translate(-5.4px,1.7px) rotate(-3.1deg)}
+  44% {transform:translate(3.9px,-1.2px) rotate(2.2deg)}
+  62% {transform:translate(-2.4px,.8px) rotate(-1.4deg)}
+  80% {transform:translate(1.1px,-.3px) rotate(.6deg)}
+  100%{transform:translate(0,0) rotate(0deg)}
+}
+.token.shaking{animation:linkedShake .3s ease-out}
 .card .slot{position:absolute;display:flex;align-items:center;justify-content:center}
 .card .art img{position:absolute;left:50%;top:50%;transform-origin:50% 50%;
   filter:drop-shadow(-2px 1.5px 0 rgba(46,26,14,.24));z-index:2}
@@ -2439,6 +2454,15 @@ function drawChainLink(fromIndex, toIndex){
   return line;
 }
 
+/** 被别人的结算波及时抖一下，对应 CatCafeLinkedPieceShake */
+function shakePiece(index){
+  const token = REF.cells[index] && REF.cells[index].querySelector('.token');
+  if (!token) return;
+  token.classList.remove('shaking');
+  void token.offsetWidth;
+  token.classList.add('shaking');
+}
+
 function pulseCell(index, seconds, peak, markerAlpha){
   const cell = REF.cells[index];
   const token = cell.querySelector('.token');
@@ -2491,7 +2515,10 @@ async function playSettlement(events){
                        : U.numOr('settlement_reaction_linked_marker_alpha', .24);
 
     const lines = e.sources.map(src => drawChainLink(src, e.index));
-    for (const src of e.sources) REF.cells[src].classList.add('linked');
+    for (const src of e.sources){
+      REF.cells[src].classList.add('linked');
+      shakePiece(src);
+    }
     pulseCell(e.index, seconds, peak, alpha);
 
     const names = e.sources.map(i => defs[S.board[i].key].name);
@@ -2668,7 +2695,8 @@ function itemOptions(tier){
 
 function choiceCard(parent, def){
   const w = U.num('ui_choice_card_width'), h = U.num('ui_choice_card_height');
-  const card = el('div', 'card', parent);
+  const card = el('div', 'card entering', parent);
+  card.style.animationDelay = (parent.children.length - 1) * 0.06 + 's';
   card.style.width = w + 'px';
   card.style.height = h + 'px';
   card.style.backgroundImage = `url('${ART}PaperSkin/reward-card-v2.png')`;
@@ -2846,6 +2874,35 @@ function appendEndlessStage(previous, day, target){
   });
 }
 
+/**
+ * 失败印章，移植 PlayFailureStamp：整层暗红淡入的同时，字从 1.9 倍砸到正位，
+ * 停 0.95s 再淡出。时长取表里的 run_fail_fx_*，表里没配就用 Unity 的默认值。
+ */
+function playFailureStamp(){
+  const flash = U.numOr('run_fail_fx_flash_seconds', 0.16);
+  const hold = U.numOr('run_fail_fx_hold_seconds', 0.95);
+  const fade = U.numOr('run_fail_fx_fade_seconds', 0.35);
+
+  const layer = el('div', 'abs', $('#fx'));
+  place(layer, 0, 0, 1536, 864);
+  layer.style.background = 'rgba(56,13,10,.62)';
+  const stamp = makeText(layer, 64, '#F5DEB8');
+  place(stamp, (1536 - 1100) / 2, (864 - 140) / 2, 1100, 140);
+  stamp.style.textShadow = '4px 4px 0 rgba(26,8,6,.75)';
+  text(stamp, U.strOr('run_fail_stamp_text', '没 达 到 营 业 额 ……'));
+
+  playSfx('rollStop');
+  layer.animate([{opacity:0},{opacity:1}],
+    { duration: flash * 1000, easing:'cubic-bezier(.22,.61,.36,1)', fill:'forwards' });
+  stamp.animate([{transform:'scale(1.9)'},{transform:'scale(1)'}],
+    { duration: flash * 1000, easing:'cubic-bezier(.22,.61,.36,1)', fill:'forwards' });
+  setTimeout(() => {
+    layer.animate([{opacity:1},{opacity:0}], { duration: fade * 1000, fill:'forwards' })
+      .onfinish = () => layer.remove();
+  }, (flash + hold) * 1000);
+  return (flash + hold + fade) * 1000;
+}
+
 async function endStage(){
   closeOverlays();
   const cleared = S.money >= stage().target;
@@ -2875,6 +2932,9 @@ async function endStage(){
       () => { closeOverlays(); endRun(true); });
     return;
   }
+
+  // 失败三拍：印章 → 字条 → 今日账本，顺序和 Unity 的 PlayFailureSequence 一致
+  if (!cleared) await wait(playFailureStamp());
 
   let title, copy, button;
   if (!cleared){
