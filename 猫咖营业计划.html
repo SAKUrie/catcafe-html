@@ -1235,7 +1235,7 @@ function confirmSubmitAndExit(){
   const score = META.bestScore || 0;
   const { body } = newOverlay('结 束 试 玩', 700, 520, false);
   bodyText(body,
-    `${META.playerName || '无名店长'}，你的最高成绩即将提交到排行榜。\n\n` +
+    `${META.playerName || '无名店长'}，你的最高成绩即将${leaderboardReady() ? '提交到排行榜' : '记录下来'}。\n\n` +
     `最高累计营业额：${score} 金币`,
     18, '#40291c', 560).style.flex = '1';
 
@@ -1260,7 +1260,9 @@ function confirmSubmitAndExit(){
 
 async function showLeaderboard(localOnly){
   closeOverlays();
-  const { body } = newOverlay('全 服 排 行 榜', 820, 720, true);
+  // 没接后端时别把本机记录冒充成全服榜，标题和说明都要讲实话
+  const online = leaderboardReady();
+  const { body } = newOverlay(online ? '全 服 排 行 榜' : '本 机 记 录', 820, 720, true);
   const loading = bodyText(body, '正在读取排行榜…', 16, '#6b5137', 700);
 
   const data = await fetchLeaderboard();
@@ -1299,8 +1301,9 @@ async function showLeaderboard(localOnly){
     });
   }
 
-  if ((localOnly || data.local) && DEV_NOTES)
-    bodyText(body, '（当前是本机榜单，接上后端后会换成全服数据）', 13, '#8a7256', 700);
+  if (!online)
+    bodyText(body, '这台机器上的记录。联网榜单还没开，暂时看不到别人的成绩。',
+      14, '#8a7256', 700);
 
   const actions = el('div', null, body);
   actions.style.cssText = 'display:flex;gap:12px;align-items:center;flex:none';
