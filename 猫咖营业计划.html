@@ -170,6 +170,9 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 /* 卡片入场，参数照 PlayCardEntrance：错开 0.06s、单张 0.18s、从 alpha0 + 0.88 倍放大到位 */
 @keyframes cardEnter{from{opacity:0;transform:scale(.88)}to{opacity:1;transform:scale(1)}}
 .card.entering{animation:cardEnter .18s cubic-bezier(.22,.61,.36,1) both}
+/* 揭晓页光环呼吸：Unity 是 sin(t·2.8)，周期 2π/2.8 ≈ 2.244s，内外圈反相 */
+@keyframes haloOuterBreath{0%,100%{transform:scale(1.02)}50%{transform:scale(1.10)}}
+@keyframes haloInnerBreath{0%,100%{transform:scale(1.04)}50%{transform:scale(0.98)}}
 /* 联动受影响的棋子会挨一下：CatCafeLinkedPieceShake 的水平 7px / 垂直 2.2px /
    旋转 4 度 / 4.25 次振荡 / 阻尼衰减，这里用同样的参数打成关键帧。 */
 @keyframes linkedShake{
@@ -1356,6 +1359,100 @@ function resetForNextPlayer(){
 }
 
 /* ==========================================================================
+   7.8 首次遇见新猫的揭晓页（移植 CatCafeDiscoveryReveal）
+       两层暖金光片代替廉价烟花：像图鉴贴纸被盖上收藏印章。
+   ========================================================================== */
+function showDiscoveryReveal(def){
+  return new Promise(done => {
+    const layer = el('div', 'abs', $('#overlays'));
+    place(layer, 0, 0, 1536, 864);
+    layer.style.cssText += 'background:rgba(14,9,6,.88);pointer-events:auto;z-index:20;' +
+      'display:flex;align-items:center;justify-content:center';
+
+    const card = el('div', 'abs', layer);
+    place(card, (1536 - 720) / 2, (864 - 690) / 2, 720, 690);
+    card.style.transformOrigin = '50% 50%';
+    const cardSkin = el('div', 'skin modal9', card);
+    cardSkin.style.borderImageSource = `url('${ART}PaperSkin/modal-main-v2.png')`;
+
+    // 缎带标题，锚在卡片顶部往下 42
+    const ribbon = el('div', 'ribbon abs', card);
+    place(ribbon, (720 - 590) / 2, 42, 590, 112);
+    ribbon.style.fontSize = U.font(34);
+    el('div', 'skin ribbon9', ribbon).style.borderImageSource =
+      `url('${ART}PaperSkin/title-ribbon-v2.png')`;
+    const ribbonLabel = el('div', null, ribbon);
+    ribbonLabel.style.position = 'relative';
+    text(ribbonLabel, '发 现 新 伙 伴');
+
+    // 立绘框：卡片中心往上 50
+    const frame = el('div', 'abs', card);
+    place(frame, (720 - 350) / 2, (690 - 350) / 2 - 50, 350, 350);
+    frame.style.backgroundImage = `url('${ART}PaperSkin/reward-card-v2.png')`;
+    frame.style.backgroundSize = '100% 100%';
+
+    const halo = (size, color) => {
+      const h = el('div', 'abs', frame);
+      place(h, (350 - size) / 2, (350 - size) / 2, size, size);
+      h.style.cssText += `border-radius:50%;background:radial-gradient(circle,${color},transparent 70%);` +
+        'transform-origin:50% 50%;pointer-events:none';
+      return h;
+    };
+    const haloOuter = halo(292, 'rgba(255,184,51,.30)');
+    const haloInner = halo(230, 'rgba(255,232,122,.40)');
+
+    const sticker = el('div', 'abs', frame);
+    place(sticker, (350 - 255) / 2, (350 - 255) / 2, 255, 255);
+    sticker.style.transformOrigin = '50% 50%';
+    if (def.asset){
+      const img = el('img', null, sticker);
+      img.style.cssText = 'position:absolute;left:50%;top:50%;transform-origin:50% 50%';
+      pawnVisual(img, def.asset, 255, 255, 255 * U.num('ui_pawn_visual_fill_ratio'));
+    }
+
+    const name = makeText(card, 42, '#3D2417');
+    place(name, (720 - 560) / 2, 690 - 164 - 70, 560, 70);
+    text(name, def.name);
+    const added = makeText(card, 24, '#75573B');
+    place(added, (720 - 520) / 2, 690 - 112 - 46, 520, 46);
+    text(added, '已加入猫咪图鉴');
+
+    const btn = paperButton(card, '认识新伙伴', 270, 64, 'primary', () => {
+      // 收起也算在暂停时间里，避免后续结算穿过正在合上的纸页
+      card.animate([{transform:'scale(1)',opacity:1},{transform:'scale(.9)',opacity:0}],
+        { duration:160, fill:'forwards' });
+      layer.animate([{opacity:1},{opacity:0}], { duration:160, fill:'forwards' })
+        .onfinish = () => { layer.remove(); done(); };
+    });
+    btn.style.position = 'absolute';
+    place(btn, (720 - 270) / 2, 690 - 42 - 64);
+
+    // 出场 0.42s：卡片 0.86→1，贴纸带 0.12 的过冲弹一下，两层光环同时张开
+    const OPEN = 420;
+    const t0 = performance.now();
+    (function frameLoop(now){
+      const t = clamp((now - t0) / OPEN, 0, 1);
+      const cardT = 1 - Math.pow(1 - t, 3);
+      card.style.transform = `scale(${0.86 + (1 - 0.86) * cardT})`;
+      const st = clamp((t - 0.25) / 0.75, 0, 1);
+      const stickerScale = (1 - Math.pow(1 - st, 3)) + Math.sin(st * Math.PI) * 0.12;
+      sticker.style.transform = `scale(${stickerScale})`;
+      haloOuter.style.transform = `scale(${0.55 + (1.18 - 0.55) * t})`;
+      haloInner.style.transform = `scale(${0.45 + (1 - 0.45) * t})`;
+      if (t < 1) requestAnimationFrame(frameLoop);
+      else {
+        card.style.transform = 'scale(1)';
+        sticker.style.transform = 'scale(1)';
+        // 稳态呼吸：sin(t·2.8)，外圈 1.02~1.10、内圈反相 0.98~1.04
+        haloOuter.style.animation = 'haloOuterBreath 2.244s ease-in-out infinite';
+        haloInner.style.animation = 'haloInnerBreath 2.244s ease-in-out infinite';
+      }
+    })(t0);
+    playSfx('reward');
+  });
+}
+
+/* ==========================================================================
    8. 共用弹窗
    ========================================================================== */
 function closeOverlays(){ $('#overlays').innerHTML = ''; }
@@ -2441,6 +2538,70 @@ function furBurst(index){
   }
 }
 
+/**
+ * 连击飙字。这是 Unity 没有的加料：连锁数摸到 chain_connected_threshold 之后，
+ * 每多一次联动就把数字往上顶一档，越连越大越红。
+ */
+function showCombo(count){
+  const threshold = U.numOr('chain_connected_threshold', 3);
+  if (count < threshold) return;
+  const over = count - threshold;
+  const old = $('#comboTag');
+  if (old) old.remove();
+
+  const box = el('div', 'abs', $('#fx'));
+  box.id = 'comboTag';
+  // 摆在棋盘上沿居中：右上角会压到帮助按钮和书页边缘。
+  // 底下垫一块深色托：不然浅金字落在浅纸面上读不清，压着棋子也糊。
+  place(box, BOARD.x + BOARD.w / 2 - 160, BOARD.y + 8, 320, 96);
+  box.style.cssText += 'display:flex;align-items:center;justify-content:center;gap:10px;' +
+    'pointer-events:none;border-radius:14px;' +
+    'background:radial-gradient(ellipse at center,rgba(38,18,8,.82),rgba(38,18,8,.34) 62%,transparent 78%)';
+
+  const num = el('div', null, box);
+  const size = Math.min(96, 48 + over * 9);
+  // 越连越烫：从暖黄推到橙红
+  const hue = Math.max(6, 46 - over * 7);
+  num.style.cssText = `font-weight:700;font-size:${size}px;line-height:1;` +
+    `color:hsl(${hue} 96% 58%);text-shadow:3px 3px 0 rgba(60,22,8,.85), 0 0 24px hsl(${hue} 100% 60% / .8)`;
+  text(num, String(count));
+  const tag = el('div', null, box);
+  tag.style.cssText = `font-weight:700;font-size:${Math.round(size * 0.34)}px;color:#FFE7A6;` +
+    'text-shadow:2px 2px 0 rgba(60,22,8,.85)';
+  text(tag, '连锁');
+
+  box.animate(
+    [ { transform:'scale(.4) rotate(-8deg)', opacity:0 },
+      { transform:'scale(1.25) rotate(3deg)', opacity:1, offset:.35 },
+      { transform:'scale(1) rotate(0deg)', opacity:1, offset:.55 },
+      { transform:'scale(1) rotate(0deg)', opacity:1, offset:.8 },
+      { transform:'scale(1.1) rotate(0deg)', opacity:0 } ],
+    // 缓动不能带过冲：cubic-bezier 的 y>1 会把进度提前推过最后一帧，
+    // 数字还没看清就 opacity 归零了。弹跳已经写在上面的 scale 关键帧里。
+    { duration: 1100 / SPEED(), easing:'ease-out' }
+  ).onfinish = () => box.remove();
+}
+
+/** 撒花。通关一天/通关整局时从顶部落下的纸屑，也是 Unity 没有的加料。 */
+function confettiBurst(count = 90, seconds = 2.6){
+  const colors = D.rarities.map(r => r.color).concat(['#FFD75A', '#FFF0C4', '#E86A5B']);
+  for (let i = 0; i < count; i++){
+    const bit = el('div', 'abs', $('#fx'));
+    const w = 8 + Math.random() * 10, h = 12 + Math.random() * 14;
+    place(bit, Math.random() * 1536, -40 - Math.random() * 200, w, h);
+    bit.style.cssText += `background:${colors[i % colors.length]};` +
+      `border-radius:${Math.random() < 0.4 ? '50%' : '2px'};pointer-events:none;opacity:.95`;
+    const drift = (Math.random() - 0.5) * 320;
+    const spin = (Math.random() - 0.5) * 1440;
+    bit.animate(
+      [ { transform:'translate(0,0) rotate(0deg)', opacity:.95 },
+        { transform:`translate(${drift}px, ${960 + Math.random() * 160}px) rotate(${spin}deg)`, opacity:.15 } ],
+      { duration:(seconds * 1000) * (0.6 + Math.random() * 0.6),
+        delay:Math.random() * 700, easing:'cubic-bezier(.25,.6,.5,1)' }
+    ).onfinish = () => bit.remove();
+  }
+}
+
 function drawChainLink(fromIndex, toIndex){
   const a = cellCenter(fromIndex), b = cellCenter(toIndex);
   const line = el('div', 'abs', REF.chainLines);
@@ -2504,6 +2665,7 @@ async function playSettlement(events){
   });
   const threshold = U.numOr('chain_connected_threshold', 3);
   let firstSynergyShown = false;
+  let comboCount = 0;
 
   for (const e of linked){
     const high = e.amount >= threshold * 3 || e.sources.length >= threshold;
@@ -2528,6 +2690,7 @@ async function playSettlement(events){
       : fmt(U.str('ui_settlement_multi_link_label_format'),
             names.slice(0, limit).join(U.str('ui_settlement_source_separator')), names.length);
     showToast(fmt(U.str('ui_settlement_reaction_format'), label, e.amount));
+    showCombo(++comboCount);
 
     // 字条讲的就是"这一对挨在一起"，所以只在盘面真有这一对时停一拍
     if (!firstSynergyShown && e.sources.length){
@@ -2803,11 +2966,14 @@ function showChoices(){
   if (S.rerollTokens > 0) notify('reroll_ticket_first', [reroll]);
 }
 
-function choose(key){
+async function choose(key){
   S.pool.push(newPiece(key));
-  if (isCat(defs[key]) && discover(key)) S.runDiscoveries.push(key);
+  const firstTime = isCat(defs[key]) && discover(key);
+  if (firstTime) S.runDiscoveries.push(key);
   showToast(defs[key].name + ' 记进了名册');
   finishChoice();
+  // 第一次遇见这只猫才揭晓；重复遇见不打断节奏
+  if (firstTime) await showDiscoveryReveal(defs[key]);
 }
 function finishChoice(){
   closeOverlays();
@@ -2913,6 +3079,10 @@ async function endStage(){
   if (cleared){
     META.cans += U.numOr('meta_cans_per_stage_clear', 10);
     saveMeta();
+    // 通关一天就撒一次；正常经营全通或无尽越走越远时撒得更狠
+    const grand = finishedNormalRun || S.endless;
+    confettiBurst(grand ? 160 : 80, grand ? 3.4 : 2.4);
+    playSfx('reward');
   }
 
   // 通关正常经营后询问是否续摊；这是无尽挑战的唯一入口，和 OfferEndlessChallenge 一致
