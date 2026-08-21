@@ -152,15 +152,16 @@ body{font-family:'CatCafeUI','PingFang SC','Microsoft YaHei',sans-serif;
 
 .cardrail{display:flex;align-items:center;justify-content:center}
 .card{position:relative;cursor:pointer;flex:none;background-size:100% 100%;
-  transition:transform .14s ease,filter .14s ease}
+  isolation:isolate;transition:transform .14s ease,filter .14s ease}
 .card:hover{transform:translateY(-6px);filter:brightness(1.05)}
 .card .slot{position:absolute;display:flex;align-items:center;justify-content:center}
 .card .art img{position:absolute;left:50%;top:50%;transform-origin:50% 50%;
   filter:drop-shadow(-2px 1.5px 0 rgba(46,26,14,.24));z-index:2}
-/* 稀有度底色：卡面美术里的图框是一块棕色纸板，这里用 color 混合把它换成
-   Rarities 表配的色相，保留原有的纹理和明暗，不是盖一块死色块。 */
-.rarityWash{position:absolute;left:5%;top:4%;right:5%;bottom:4%;border-radius:6px;
-  mix-blend-mode:color;opacity:.82;pointer-events:none;z-index:1}
+/* 稀有度底色：整张卡的底纸按 Rarities 表换色相。用 color 混合而不是盖死色块，
+   纸纹、图框的明暗和描边都保留；文字和棋子图都画在它上面，不受影响。 */
+.rarityWash{position:absolute;left:0;top:0;width:100%;height:100%;
+  mix-blend-mode:color;opacity:.82;pointer-events:none;z-index:0}
+.card .slot{z-index:1}
 .card .badge{display:flex;align-items:center;justify-content:center;color:#fff2da;font-weight:700;
   background-size:100% 100%;background-repeat:no-repeat;text-shadow:0 1px 0 rgba(60,32,18,.5)}
 .card .nm{color:#472c1c;font-weight:700}
@@ -2580,6 +2581,7 @@ function choiceCard(parent, def){
   const rarity = rarityDefs[def.rarity] || { color:'#9C7350', label:'普通', badge:'badge-brown-v2' };
   // 稀有度用 Rarities 表的 color 上到描边，一眼能分级
   card.style.filter = `drop-shadow(3px -3px 0 ${rarity.color}dd)`;
+  el('div', 'rarityWash', card).style.background = rarity.color;
 
   // 卡面槽位按 reward-card 美术的归一化坐标摆（PlaceOnCard）
   const slot = (top, bottom, left, right) =>
@@ -2587,7 +2589,6 @@ function choiceCard(parent, def){
 
   const art = slot(0.085, 0.545, 0.10, 0.90);
   art.classList.add('art');
-  el('div', 'rarityWash', art).style.background = rarity.color;
   if (def.asset){
     const aw = w * 0.80 - 12, ah = h * (0.545 - 0.085) - 12;
     pawnVisual(el('img', null, art), def.asset, aw, ah,
